@@ -1,0 +1,185 @@
+# vLLM CLI — Requirements
+
+## 1. Overview
+
+A small Python command-line tool for managing local vLLM Docker containers. Each model runs in its own container, exposing an OpenAI-compatible API on a dedicated host port. The CLI starts and stops these containers, lists what is configured and what is running, and reports how to connect to each model.
+
+All models are declared in a single YAML registry. There is no ad-hoc model launching; a model must exist in the config before it can be started. Docker itself is the source of truth for runtime state, so the CLI holds no separate state file that could drift.
+
+## 2. Scope
+
+In scope:
+
+- Start, stop, restart, and bulk-stop of vLLM containers, one per model.
+- A YAML registry defining models and their runtime configuration.
+- Listing configured models (with a running marker) and listing live containers (with readiness).
+- Generating a starter config and documenting the config schema from within the CLI.
+- Port-collision detection both in config and against the live host.
+
+Out of scope:
+
+- Ad-hoc models not present in the config.
+- GPU memory scheduling or admission control. Concurrent starts that exceed available memory will OOM inside vLLM and surface through logs.
+- Authentication or TLS for the exposed endpoints. vLLM serves unauthenticated by default; exposure is controlled only by bind address.
+
+## 3. Target environment
+
+- vLLM requires an NVIDIA GPU and CUDA, so this tool targets a Linux host with the NVIDIA container toolkit installed (for example the DGX box). It is not intended to run vLLM on Apple Silicon.
+- Docker must be available to the user running the CLI.
+- The CLI talks to Docker and inspects host network state, so it expects to run on the same host as the containers.
+
+## 4. Configuration
+
+### 4.1 File
+
+A single `config.yaml`, read from the current working directory. Every command that needs model data loads and validates this file first.
+
+### 4.2 Structure
+
+```yaml
+defaults:
+  image: vllm/vllm-openai:latest
+  gpus: all
+  bind_address: 127.0.0.1
+  models_volume: /data/hf-cache
+  dtype: auto
+  extra_args: []
+
+models:
+  laguna-xs:
+    model: poolside/laguna-xs.2
+    port: 8001
+
+  qwen-coder:
+    model: Qwen/Qwen2.5-Coder-32B-Instruct
+    port: 8002
+    bind_address: 0.0.0.0
+    extra_args: ["--gpu-memory-utilization", "0.90"]
+    extra_props:
+        tensor_parallel_size: 2
+        max_model_len: 32768
+```
+
+### 4.3 Resolution rules
+
+- A model's effective configuration is the `defaults` block merged with that model's own fields. The model value wins on any conflict.
+- Fields left unset everywhere are simply omitted, falling back to vLLM's own defaults.
+- The logical model name (the key under `models`) is what the user types on the CLI and what is used to label and identify the container.
+
+### 4.4 Field reference
+
+These fields apply either globally under `defaults` or per model, except where noted.
+
+| Field | Scope | Meaning | Values / default |
+| --- | --- | --- | --- |
+| `image` | default + per-model | vLLM Docker image and tag. Pin a tag for reproducibility. | `vllm/vllm-openai:latest` |
+| `gpus` | default + per-model | Devices exposed to the container, mapped to `docker --gpus`. | `all`, `0`, `0,1`. Default `all` |
+| `bind_address` | default + per-model | Host interface the API binds to. | `127.0.0.1` = local only, `0.0.0.0` = exposed to LAN (unauthenticated). Default `127.0.0.1` |
+| `models_volume` | default + per-model | Host path mounted into the container as the Hugging Face cache. Shared so models download once. | Any host path. Default per environment |
+| `dtype` | default + per-model | Model precision. | `auto`, `float16`, `bfloat16`, etc. Default `auto` |
+| `extra_args` | default + per-model | Raw flags passed straight to vLLM for anything not modeled above. | List of strings. Default `[]` |
+| `model` | per-model (required) | Hugging Face repo id or local path. | e.g. `Qwen/Qwen2.5-Coder-32B-Instruct` |
+| `port` | per-model (required) | Unique host port for this model's API. | Any free port |
+| `served_name` | per-model | Model id clients send in requests. | Defaults to the value of `model` |
+| `tensor_parallel_size` | per-model | Number of GPUs to shard the model across. | Integer. Default `1` |
+| `max_model_len` | per-model | Maximum context length. | Integer. Omit to use the model default |
+
+## 5. Validation
+
+Validation runs on every command that reads the config, before any Docker action is taken.
+
+- **Required fields:** every model must define `model` and `port`.
+- **Colliding ports in config:** scan all `models[].port`. If two or more models declare the same port, fail with an error naming each conflicting model and the shared port. This prevents a structurally broken config from reaching Docker.
+- **Unknown model name:** any command taking a `<name>` argument errors if the name is not present in the config.
+
+## 6. Commands
+
+### `init`
+
+Creates a `config.yaml` in the current directory, pre-populated with the `defaults` block and one or two placeholder model entries so the structure is self-explanatory. The generated file includes inline comments describing each field, drawn from the same source as `help config` so the two never drift.
+
+Refuses to overwrite an existing `config.yaml` unless `--force` is passed.
+
+### `help config`
+
+Prints the field reference from section 4.4: every field, its meaning, and accepted values. This is the in-CLI documentation for the schema.
+
+### `start <name>`
+
+1. Validate that `<name>` exists in the config.
+2. Resolve the effective configuration for the model.
+3. Check the host port. If it is already in use, do not start. Print an error stating the port is taken, and identify the occupant:
+   - If the occupant is a CLI-managed container, name the managed model (for example, "port 8001 taken by managed model laguna-xs").
+   - Otherwise, show the raw PID and process name of the occupying process.
+4. Otherwise launch the container:
+   - Apply labels `managed-by` and `model-name=<name>` for later discovery.
+   - Mount `models_volume` as the Hugging Face cache.
+   - Bind the API to the resolved `bind_address` and `port`.
+   - Pass `gpus`, `dtype`, `tensor_parallel_size`, `max_model_len`, and `extra_args` as applicable.
+5. Return as soon as the container is up. The command does not wait for the model to finish loading; it prints the connection info immediately. Readiness is reported separately by `ps`.
+
+### `stop <name>`
+
+Stop and remove that model's container.
+
+### `stop-all`
+
+Stop and remove all CLI-managed containers, filtered by the `managed-by` label so other Docker workloads on the host are never touched.
+
+- Without flags: graceful stop, then remove.
+- With `--force`: kill immediately, then remove.
+
+### `restart <name>`
+
+Convenience wrapper equivalent to `stop <name>` followed by `start <name>`.
+
+### `logs <name>`
+
+Tail the container logs for the model. This is the primary way to watch model loading progress and diagnose OOM or startup failures. On a first-ever `start`, the Hugging Face download progress also appears here, since the download is performed by the Hub library inside the container and its progress is written to the container logs.
+
+### `download <name>`
+
+Pre-download a model's weights into `models_volume` (the shared Hugging Face cache), separately from starting a container. This isolates the slow first-run download from `start`, shows download progress interactively in the terminal rather than buried in container logs, and makes a later `start` of that model fast and consistent. An interrupted download can simply be re-run.
+
+- With `<name>`: validate the name against the config, then download that model into `models_volume`.
+- Without `<name>`: list the configured models that are not yet downloaded, i.e. the models available to download. Already-downloaded models are omitted.
+
+Implementation note: the actual fetch uses the Hugging Face download path (for example `hf download <model>`) targeting `models_volume`. `HF_HUB_ENABLE_HF_TRANSFER=1` may be set to use the faster Rust transfer backend.
+
+### `list`
+
+List every configured model in the exact order it appears in the YAML. For each model the line shows:
+
+- The model name.
+- A download status label: `Downloaded` if the model's weights are present in `models_volume`, otherwise `not downloaded`.
+- `RUNNING` aligned flush-right when a live managed container exists for it. Models that are not running show nothing in that position.
+
+This is the registry view: it answers "what can I run, what is already on disk, and what is up right now." A model can appear here without appearing in `ps`.
+
+Download detection inspects the Hugging Face cache layout under `models_volume` (the `models--<org>--<repo>` snapshot directories) to decide whether a model counts as `Downloaded`.
+
+### `ps`
+
+Runtime view of live managed containers only. For each one, show the model name, host port, container status, base URL (`http://<bind_address>:<port>/v1`), and a readiness state obtained by polling vLLM's `/health` endpoint, distinguishing a container that is still loading from one that is ready to serve.
+
+## 7. Runtime state and discovery
+
+- The CLI does not keep a local state file. Live state is read from Docker by filtering on the `managed-by` label.
+- Every container the CLI creates is labelled `managed-by` and `model-name=<name>`, which is how `stop-all`, `list`, `ps`, and the port-collision lookup recognise their own containers.
+- Download status is derived from the contents of `models_volume`, not from any tracked state, so it stays correct regardless of how a model got there.
+
+## 8. Port-collision lookup detail
+
+When a `start` finds its target port occupied, it maps the port to the owning process (for example via `psutil.net_connections` or `ss -ltnp`). It then determines whether that process belongs to a CLI-managed container, reporting either the managed model name or the raw PID and process name accordingly.
+
+## 9. Connection model
+
+Each model exposes an OpenAI-compatible API at `http://<bind_address>:<port>/v1`. Clients send the model id given by `served_name` (or `model` if `served_name` is unset). With `bind_address: 127.0.0.1` the endpoint is reachable only from the host; with `0.0.0.0` it is reachable from the LAN with no authentication.
+
+## 10. Constraints summary
+
+- No ad-hoc models. Only YAML-defined names can be started.
+- One container per model, each on its own unique port. Multiple models can run concurrently.
+- The CLI does not police GPU memory. Concurrent starts can exhaust memory and OOM inside vLLM, visible through `logs`.
+- Exposed endpoints are unauthenticated; access control is limited to the bind address.
+- vLLM requires NVIDIA/CUDA, so the tool targets a Linux GPU host.
