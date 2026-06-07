@@ -10,7 +10,7 @@ from vllm_cli import logging_setup as _logging_setup
 from vllm_cli import render as _render
 from vllm_cli.adapters import docker_adapter as _docker
 from vllm_cli.adapters import hf_adapter as _hf
-from vllm_cli.config import generate_init_yaml, load_config, resolve_all
+from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all
 from vllm_cli.errors import DockerUnavailableError, VllmCliError, exit_code_for
 
 app = typer.Typer(
@@ -88,6 +88,51 @@ def list_cmd(
             downloaded |= _hf.list_downloaded_models(vol)
 
         _render.list_models(console, resolved, downloaded, running)
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("stop")
+def stop_cmd(
+    name: str = typer.Argument(..., help="Name of the model to stop."),
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """Stop and remove a model's container."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        lookup_model(config, name)
+        stopped = _docker.stop_model(name)
+        if stopped:
+            console.print(f"Stopped: {name}")
+        else:
+            console.print(f"{name} is not running")
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("stop-all")
+def stop_all_cmd(
+    force: bool = typer.Option(False, "--force", help="Kill containers immediately instead of graceful stop."),
+) -> None:
+    """Stop and remove all managed containers."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        stopped = _docker.stop_all(force=force)
+        if stopped:
+            console.print(f"Stopped: {', '.join(stopped)}")
+        else:
+            console.print("No managed containers running")
     except DockerUnavailableError as exc:
         err_console.print(f"Error: Docker daemon is unreachable: {exc}")
         raise typer.Exit(4)
