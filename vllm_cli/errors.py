@@ -25,6 +25,14 @@ class OperationError(VllmCliError):
     pass
 
 
+class UnknownContainerError(VllmCliError):
+    """Raised when no running managed container exists for the given model name."""
+
+    def __init__(self, model_name: str) -> None:
+        super().__init__(f"No running container for model '{model_name}'")
+        self.model_name = model_name
+
+
 class DownloadError(VllmCliError):
     pass
 

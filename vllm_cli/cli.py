@@ -12,7 +12,7 @@ from vllm_cli.adapters import docker_adapter as _docker
 from vllm_cli.adapters import health as _health
 from vllm_cli.adapters import hf_adapter as _hf
 from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all
-from vllm_cli.errors import DockerUnavailableError, DownloadError, VllmCliError, exit_code_for
+from vllm_cli.errors import DockerUnavailableError, DownloadError, UnknownContainerError, VllmCliError, exit_code_for
 
 app = typer.Typer(
     name="vllm-cli",
@@ -154,6 +154,30 @@ def download_cmd(
         err_console.print(f"Error: {exc}")
         err_console.print("The download is re-runnable — simply run the same command again.")
         raise typer.Exit(6)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("logs")
+def logs_cmd(
+    name: str = typer.Argument(..., help="Name of the model whose logs to tail."),
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """Stream a model container's logs to stdout; Ctrl-C exits cleanly."""
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        lookup_model(config, name)
+        _docker.stream_container_logs(name)
+    except KeyboardInterrupt:
+        raise typer.Exit(0)
+    except UnknownContainerError as exc:
+        err_console.print(f"{exc}")
+        raise typer.Exit(0)
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
     except VllmCliError as exc:
         err_console.print(f"Error: {exc}")
         raise typer.Exit(exit_code_for(exc))

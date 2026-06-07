@@ -101,6 +101,34 @@ def stop_model(name: str) -> bool:
         raise OperationError(str(exc)) from exc
 
 
+def stream_container_logs(name: str) -> None:
+    """Stream logs for the managed container of model `name` to stdout.
+
+    Raises UnknownContainerError if no running container is found for the model.
+    Ctrl-C (KeyboardInterrupt) is allowed to propagate so the caller can exit cleanly.
+    """
+    from vllm_cli.errors import UnknownContainerError
+
+    client = _make_client()
+    try:
+        containers = client.containers.list(
+            filters={
+                "label": [
+                    f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE}",
+                    f"{MODEL_NAME_LABEL}={name}",
+                ],
+                "status": "running",
+            }
+        )
+        if not containers:
+            raise UnknownContainerError(name)
+        container = containers[0]
+        for chunk in container.logs(stream=True, follow=True):
+            print(chunk.decode("utf-8", errors="replace"), end="", flush=True)
+    except DockerException as exc:
+        raise OperationError(str(exc)) from exc
+
+
 def stop_all(force: bool = False) -> list[str]:
     """Stop and remove all managed containers.
 
