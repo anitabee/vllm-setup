@@ -8,7 +8,10 @@ import typer
 from vllm_cli import __version__
 from vllm_cli import logging_setup as _logging_setup
 from vllm_cli import render as _render
-from vllm_cli.config import generate_init_yaml
+from vllm_cli.adapters import docker_adapter as _docker
+from vllm_cli.adapters import hf_adapter as _hf
+from vllm_cli.config import generate_init_yaml, load_config, resolve_all
+from vllm_cli.errors import DockerUnavailableError, VllmCliError, exit_code_for
 
 app = typer.Typer(
     name="vllm-cli",
@@ -64,6 +67,33 @@ def help_config() -> None:
     """Print the full configuration field reference (all fields, scopes, and defaults)."""
     console = _render.make_console(bool(_state["no_color"]))
     _render.print_field_reference(console)
+
+
+@app.command("list")
+def list_cmd(
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """List configured models with download status and running state."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        resolved = list(resolve_all(config).values())
+
+        running = _docker.list_running_model_names()
+
+        unique_volumes = {rm.models_volume for rm in resolved}
+        downloaded: set[str] = set()
+        for vol in unique_volumes:
+            downloaded |= _hf.list_downloaded_models(vol)
+
+        _render.list_models(console, resolved, downloaded, running)
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
 
 
 @app.command("init")
