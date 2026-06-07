@@ -7,4 +7,4 @@ export HF_MODEL_HANDLE=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16
 
 docker pull nvcr.io/nvidia/vllm:${LATEST_VLLM_VERSION}
 
-docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:${LATEST_VLLM_VERSION} vllm serve ${HF_MODEL_HANDLE}
+docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:${LATEST_VLLM_VERSION} vllm serve ${HF_MODEL_HANDLE} --trust-remote-code
