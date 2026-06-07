@@ -14,8 +14,8 @@ class ResolvedModel:
     image: str
     gpus: str
     bind_address: str
-    models_volume: str
     dtype: str
+    models_volume: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
     served_name: Optional[str] = None
     tensor_parallel_size: Optional[int] = None

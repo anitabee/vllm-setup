@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -7,6 +8,7 @@ import typer
 from vllm_cli import __version__
 from vllm_cli import logging_setup as _logging_setup
 from vllm_cli import render as _render
+from vllm_cli.config import generate_init_yaml
 
 app = typer.Typer(
     name="vllm-cli",
@@ -62,3 +64,16 @@ def help_config() -> None:
     """Print the full configuration field reference (all fields, scopes, and defaults)."""
     console = _render.make_console(bool(_state["no_color"]))
     _render.print_field_reference(console)
+
+
+@app.command("init")
+def init(
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing config.yaml."),
+) -> None:
+    """Write a starter config.yaml in the current directory."""
+    path = Path("config.yaml")
+    if path.exists() and not force:
+        typer.echo(f"Error: {path} already exists. Use --force to overwrite.", err=True)
+        raise typer.Exit(1)
+    path.write_text(generate_init_yaml())
+    typer.echo(f"Written: {path}")

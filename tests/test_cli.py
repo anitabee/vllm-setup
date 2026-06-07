@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -55,3 +58,41 @@ def test_no_color_flag_accepted():
 def test_no_input_flag_accepted():
     result = runner.invoke(app, ["--no-input", "help", "config"])
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# init command
+# ---------------------------------------------------------------------------
+
+
+def test_init_writes_config_yaml(tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        assert Path("config.yaml").exists()
+
+
+def test_init_output_is_valid_yaml(tmp_path):
+    import yaml
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        runner.invoke(app, ["init"])
+        content = Path("config.yaml").read_text()
+        parsed = yaml.safe_load(content)
+        assert "models" in parsed
+
+
+def test_init_refuses_to_overwrite_existing(tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("config.yaml").write_text("existing content")
+        result = runner.invoke(app, ["init"])
+        assert result.exit_code != 0
+        # Existing file must not have been overwritten
+        assert Path("config.yaml").read_text() == "existing content"
+
+
+def test_init_force_overwrites_existing(tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("config.yaml").write_text("old content")
+        result = runner.invoke(app, ["init", "--force"])
+        assert result.exit_code == 0
+        assert Path("config.yaml").read_text() != "old content"
