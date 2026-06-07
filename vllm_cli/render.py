@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from vllm_cli.config import FIELD_REFERENCE
@@ -50,6 +53,33 @@ def list_models(
         table.add_row(m.name, dl_label, run_label)
 
     console.print(table)
+
+
+def print_not_downloaded(console: Console, models: list[ResolvedModel]) -> None:
+    """List models that are not yet in the cache (available to download)."""
+    if not models:
+        console.print("All configured models are already downloaded.")
+        return
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    table.add_column("name", style="bold")
+    table.add_column("model")
+    for m in models:
+        table.add_row(m.name, m.model)
+    console.print(table)
+
+
+def download_with_progress(console: Console, repo_id: str, download_fn: Callable[[], None]) -> None:
+    """Run download_fn while showing a Rich spinner. The caller raises on error."""
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task(f"Downloading [bold]{repo_id}[/bold]...", total=None)
+        download_fn()
+        progress.update(task, description=f"[green]Done[/green]  [bold]{repo_id}[/bold]")
 
 
 def print_ps(console: Console, containers: list[RuntimeContainer]) -> None:

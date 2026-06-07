@@ -12,7 +12,7 @@ from vllm_cli.adapters import docker_adapter as _docker
 from vllm_cli.adapters import health as _health
 from vllm_cli.adapters import hf_adapter as _hf
 from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all
-from vllm_cli.errors import DockerUnavailableError, VllmCliError, exit_code_for
+from vllm_cli.errors import DockerUnavailableError, DownloadError, VllmCliError, exit_code_for
 
 app = typer.Typer(
     name="vllm-cli",
@@ -110,6 +110,50 @@ def list_cmd(
     except DockerUnavailableError as exc:
         err_console.print(f"Error: Docker daemon is unreachable: {exc}")
         raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("download")
+def download_cmd(
+    name: Optional[str] = typer.Argument(None, help="Model name from config to download."),
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """Download a model's weights, or list not-yet-downloaded models."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        resolved = resolve_all(config)
+
+        unique_volumes = {rm.models_volume for rm in resolved.values()}
+        downloaded: set[str] = set()
+        for vol in unique_volumes:
+            downloaded |= _hf.list_downloaded_models(vol)
+
+        if name is None:
+            not_downloaded = [m for m in resolved.values() if m.model not in downloaded]
+            _render.print_not_downloaded(console, not_downloaded)
+            return
+
+        entry = lookup_model(config, name)
+        rm = resolved[name]
+        if rm.models_volume is None:
+            err_console.print(f"Error: 'models_volume' is not configured for '{name}'.")
+            raise typer.Exit(2)
+
+        def _do_download() -> None:
+            _hf.download_model(repo_id=rm.model, cache_dir=rm.models_volume)  # type: ignore[arg-type]
+
+        _render.download_with_progress(console, rm.model, _do_download)
+
+    except typer.Exit:
+        raise
+    except DownloadError as exc:
+        err_console.print(f"Error: {exc}")
+        err_console.print("The download is re-runnable — simply run the same command again.")
+        raise typer.Exit(6)
     except VllmCliError as exc:
         err_console.print(f"Error: {exc}")
         raise typer.Exit(exit_code_for(exc))
