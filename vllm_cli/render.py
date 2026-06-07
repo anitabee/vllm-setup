@@ -4,7 +4,7 @@ from rich.console import Console
 from rich.table import Table
 
 from vllm_cli.config import FIELD_REFERENCE
-from vllm_cli.models import ResolvedModel
+from vllm_cli.models import ResolvedModel, RuntimeContainer
 
 
 def make_console(no_color: bool = False) -> Console:
@@ -48,5 +48,33 @@ def list_models(
         dl_label = "Downloaded" if m.model in downloaded else "not downloaded"
         run_label = "RUNNING" if m.name in running else ""
         table.add_row(m.name, dl_label, run_label)
+
+    console.print(table)
+
+
+def print_ps(console: Console, containers: list[RuntimeContainer]) -> None:
+    """Print the ps runtime view: live managed containers with readiness."""
+    if not containers:
+        console.print("No managed containers running")
+        return
+
+    table = Table(show_header=True, box=None, padding=(0, 2, 0, 0))
+    table.add_column("NAME", style="bold")
+    table.add_column("MODEL")
+    table.add_column("PORT")
+    table.add_column("STATUS")
+    table.add_column("BASE URL")
+    table.add_column("READINESS")
+
+    for c in containers:
+        readiness_style = "green" if c.readiness == "ready" else "yellow"
+        table.add_row(
+            c.name,
+            c.model,
+            str(c.port),
+            c.status,
+            c.base_url,
+            f"[{readiness_style}]{c.readiness}[/{readiness_style}]",
+        )
 
     console.print(table)

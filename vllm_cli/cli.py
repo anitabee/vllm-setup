@@ -9,6 +9,7 @@ from vllm_cli import __version__
 from vllm_cli import logging_setup as _logging_setup
 from vllm_cli import render as _render
 from vllm_cli.adapters import docker_adapter as _docker
+from vllm_cli.adapters import health as _health
 from vllm_cli.adapters import hf_adapter as _hf
 from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all
 from vllm_cli.errors import DockerUnavailableError, VllmCliError, exit_code_for
@@ -67,6 +68,24 @@ def help_config() -> None:
     """Print the full configuration field reference (all fields, scopes, and defaults)."""
     console = _render.make_console(bool(_state["no_color"]))
     _render.print_field_reference(console)
+
+
+@app.command("ps")
+def ps_cmd() -> None:
+    """List live managed containers with readiness."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        containers = _docker.list_runtime_containers()
+        for c in containers:
+            c.readiness = _health.check_readiness(c.base_url)
+        _render.print_ps(console, containers)
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
 
 
 @app.command("list")
