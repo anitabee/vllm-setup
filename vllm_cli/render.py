@@ -82,6 +82,12 @@ def download_with_progress(console: Console, repo_id: str, download_fn: Callable
         progress.update(task, description=f"[green]Done[/green]  [bold]{repo_id}[/bold]")
 
 
+def print_start_info(console: Console, rm: ResolvedModel) -> None:
+    base_url = f"http://{rm.bind_address}:{rm.port}/v1"
+    console.print(f"Started  [bold]{rm.name}[/bold]")
+    console.print(f"Base URL: {base_url}")
+
+
 def print_ps(console: Console, containers: list[RuntimeContainer]) -> None:
     """Print the ps runtime view: live managed containers with readiness."""
     if not containers:

@@ -11,8 +11,9 @@ from vllm_cli import render as _render
 from vllm_cli.adapters import docker_adapter as _docker
 from vllm_cli.adapters import health as _health
 from vllm_cli.adapters import hf_adapter as _hf
-from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all
-from vllm_cli.errors import DockerUnavailableError, DownloadError, UnknownContainerError, VllmCliError, exit_code_for
+from vllm_cli.adapters import ports as _ports
+from vllm_cli.config import generate_init_yaml, load_config, lookup_model, resolve_all, resolve_model
+from vllm_cli.errors import DockerUnavailableError, DownloadError, PortCollisionError, UnknownContainerError, VllmCliError, exit_code_for
 
 app = typer.Typer(
     name="vllm-cli",
@@ -220,6 +221,74 @@ def stop_all_cmd(
             console.print(f"Stopped: {', '.join(stopped)}")
         else:
             console.print("No managed containers running")
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("start")
+def start_cmd(
+    name: str = typer.Argument(..., help="Name of the model to start."),
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """Launch a vLLM container for a configured model; returns immediately."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        entry = lookup_model(config, name)
+        rm = resolve_model(name, entry, config.defaults)
+
+        occupant = _ports.find_port_occupant(rm.port)
+        if occupant is not None:
+            if occupant.managed_model is not None:
+                msg = f"port {rm.port} taken by managed model {occupant.managed_model}"
+            else:
+                msg = f"port {rm.port} in use by PID {occupant.pid} ({occupant.process_name})"
+            raise PortCollisionError(msg)
+
+        _docker.start_model(rm)
+        _render.print_start_info(console, rm)
+    except typer.Exit:
+        raise
+    except DockerUnavailableError as exc:
+        err_console.print(f"Error: Docker daemon is unreachable: {exc}")
+        raise typer.Exit(4)
+    except VllmCliError as exc:
+        err_console.print(f"Error: {exc}")
+        raise typer.Exit(exit_code_for(exc))
+
+
+@app.command("restart")
+def restart_cmd(
+    name: str = typer.Argument(..., help="Name of the model to restart."),
+    config_path: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml."),
+) -> None:
+    """Stop then start a model's container."""
+    console = _render.make_console(bool(_state["no_color"]))
+    err_console = _render.make_error_console()
+    try:
+        config = load_config(config_path)
+        entry = lookup_model(config, name)
+        rm = resolve_model(name, entry, config.defaults)
+
+        _docker.stop_model(name)
+
+        occupant = _ports.find_port_occupant(rm.port)
+        if occupant is not None:
+            if occupant.managed_model is not None:
+                msg = f"port {rm.port} taken by managed model {occupant.managed_model}"
+            else:
+                msg = f"port {rm.port} in use by PID {occupant.pid} ({occupant.process_name})"
+            raise PortCollisionError(msg)
+
+        _docker.start_model(rm)
+        _render.print_start_info(console, rm)
+    except typer.Exit:
+        raise
     except DockerUnavailableError as exc:
         err_console.print(f"Error: Docker daemon is unreachable: {exc}")
         raise typer.Exit(4)

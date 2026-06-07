@@ -4,7 +4,7 @@ import docker
 from docker.errors import DockerException
 
 from vllm_cli.errors import DockerUnavailableError, OperationError
-from vllm_cli.models import RuntimeContainer
+from vllm_cli.models import ResolvedModel, RuntimeContainer
 
 MANAGED_BY_LABEL = "managed-by"
 MANAGED_BY_VALUE = "vllm-cli"
@@ -125,6 +125,62 @@ def stream_container_logs(name: str) -> None:
         container = containers[0]
         for chunk in container.logs(stream=True, follow=True):
             print(chunk.decode("utf-8", errors="replace"), end="", flush=True)
+    except DockerException as exc:
+        raise OperationError(str(exc)) from exc
+
+
+def _device_request(gpus: str) -> docker.types.DeviceRequest:
+    if gpus == "all":
+        return docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+    device_ids = [g.strip() for g in gpus.split(",")]
+    return docker.types.DeviceRequest(device_ids=device_ids, capabilities=[["gpu"]])
+
+
+def start_model(rm: ResolvedModel) -> RuntimeContainer:
+    """Launch a vLLM container for *rm* and return immediately (non-blocking)."""
+    client = _make_client()
+    try:
+        labels = {
+            MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+            MODEL_NAME_LABEL: rm.name,
+        }
+
+        volumes: dict[str, dict] = {}
+        if rm.models_volume:
+            volumes[rm.models_volume] = {"bind": "/root/.cache/huggingface", "mode": "rw"}
+
+        cmd: list[str] = [
+            "--host", "0.0.0.0",
+            "--port", "8000",
+            "--model", rm.model,
+            "--dtype", rm.dtype,
+        ]
+        if rm.tensor_parallel_size is not None:
+            cmd += ["--tensor-parallel-size", str(rm.tensor_parallel_size)]
+        if rm.max_model_len is not None:
+            cmd += ["--max-model-len", str(rm.max_model_len)]
+        cmd += rm.extra_args
+
+        container = client.containers.run(
+            rm.image,
+            command=cmd,
+            detach=True,
+            labels=labels,
+            volumes=volumes,
+            ports={"8000/tcp": (rm.bind_address, rm.port)},
+            device_requests=[_device_request(rm.gpus)],
+        )
+
+        base_url = f"http://{rm.bind_address}:{rm.port}/v1"
+        return RuntimeContainer(
+            name=container.name,
+            model=rm.name,
+            port=rm.port,
+            bind_address=rm.bind_address,
+            status="running",
+            base_url=base_url,
+            readiness="loading",
+        )
     except DockerException as exc:
         raise OperationError(str(exc)) from exc
 
