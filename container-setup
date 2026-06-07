@@ -1,0 +1,8 @@
+export LATEST_VLLM_VERSION=26.05.post1-py3
+
+export HF_MODEL_HANDLE=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16
+
+# For Gemma 4 model family, use vLLM custom containers:
+# docker pull vllm/vllm-openai:gemma4-cu130
+
+docker pull nvcr.io/nvidia/vllm:${LATEST_VLLM_VERSION}
